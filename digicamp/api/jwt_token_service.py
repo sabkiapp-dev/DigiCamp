@@ -72,7 +72,10 @@ class JWTTokenService:
     @classmethod
     def _generate_hmac_token(cls, host_name: str, additional_claims: dict = None) -> str:
         """Fallback HMAC token generation."""
-        secret_key = getattr(settings, 'SECRET_KEY', 'fallback-secret')
+        # Use HMAC secret configured for RPI communication
+        # RPI expects: secret='test-secret-key-for-development-only', issuer='central', audience='host1'
+        secret_key = getattr(settings, 'JWT_HOST_HMAC_SECRET', 'test-secret-key-for-development-only')
+        expected_audience = getattr(settings, 'JWT_HOST_EXPECTED_AUDIENCE_FOR_RPI', 'host1')
 
         if additional_claims is None:
             additional_claims = {}
@@ -82,7 +85,7 @@ class JWTTokenService:
             'iat': datetime.utcnow(),
             'exp': datetime.utcnow() + timedelta(minutes=cls.TOKEN_EXPIRY_MINUTES),
             'iss': cls.EXPECTED_ISSUER,
-            'aud': host_name,
+            'aud': expected_audience,
         }
 
         return jwt.encode(claims, secret_key, algorithm='HS256')
@@ -90,7 +93,7 @@ class JWTTokenService:
     @classmethod
     def verify_host_token(cls, token: str, host_id: str) -> dict:
         """
-        Verify JWT token from a host using the host's public key.
+        Verify JWT token from a host using the host's Ed25519 public key or HMAC secret.
 
         Args:
             token: The JWT token to verify
@@ -112,8 +115,33 @@ class JWTTokenService:
         if user_host.ed25519_public_key:
             return cls._verify_eddsa_token(token, host_id, user_host.ed25519_public_key)
         else:
-            # Fallback to password-based verification (legacy)
-            raise Exception(f"Host {host_id} does not have Ed25519 public key configured")
+            # Fallback to HMAC verification for hosts without Ed25519 key
+            return cls._verify_hmac_token(token, host_id)
+
+    @classmethod
+    def _verify_hmac_token(cls, token: str, host_id: str) -> dict:
+        """Verify HMAC JWT token from a host."""
+        secret_key = getattr(settings, 'JWT_HOST_HMAC_SECRET', 'test-secret-key-for-development-only')
+        expected_audience = getattr(settings, 'JWT_HOST_EXPECTED_AUDIENCE_FOR_RPI', 'central')
+
+        try:
+            payload = jwt.decode(
+                token,
+                secret_key,
+                algorithms=['HS256'],
+                options={'verify_exp': True},
+                issuer=host_id,
+                audience=expected_audience,
+            )
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise Exception("Token has expired")
+        except jwt.InvalidIssuerError:
+            raise Exception(f"Invalid issuer. Expected: {host_id}")
+        except jwt.InvalidAudienceError:
+            raise Exception(f"Invalid audience. Expected: {expected_audience}")
+        except jwt.InvalidTokenError as e:
+            raise Exception(f"Invalid token: {str(e)}")
 
     @classmethod
     def _verify_eddsa_token(cls, token: str, host_id: str, public_key: str) -> dict:
