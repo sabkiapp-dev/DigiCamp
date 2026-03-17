@@ -1,0 +1,19 @@
+[Unit]
+Description=DigiCamp Backend (Django API Server)
+After=network.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+WorkingDirectory=/opt/DigiCamp/digicamp
+Environment="PATH=/root/python_projects/VoiceAPI/env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="DJANGO_SETTINGS_MODULE=digicamp.settings"
+Environment="USE_SQLITE=false"
+Environment="PYTHONPATH=/opt/DigiCamp/digicamp"
+ExecStart=/root/python_projects/VoiceAPI/env/bin/gunicorn --workers 3 --bind 0.0.0.0:8081 digicamp.wsgi:application --timeout 120 --access-logfile /opt/DigiCamp/digicamp/logs/access.log --error-logfile /opt/DigiCamp/digicamp/logs/error.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

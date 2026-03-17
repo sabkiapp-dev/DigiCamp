@@ -1,0 +1,12 @@
+targets:
+  $default:
+    builders:
+      json_serializable:
+        generate_for:
+          - "lib/blocs/**/**.dart"
+          - "lib/models/**/**.dart"
+
+      freezed:
+        generate_for:
+          - "lib/blocs/**/**.dart"
+          - "lib/models/**/**.dart"

@@ -1,0 +1,6 @@
+While editing check campaign status as not running
+SMS campaign status color
+
+Import contacts showing wrong odia name
+
+Ask For Type in something while refreshing the api key

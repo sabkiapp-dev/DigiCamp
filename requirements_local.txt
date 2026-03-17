@@ -1,0 +1,9 @@
+Django==4.2.11
+djangorestframework==3.14.0
+djangorestframework-simplejwt==5.3.1
+djoser==2.2.2
+django-cors-headers==4.3.1
+PyJWT==2.8.0
+cryptography==42.0.5
+requests==2.31.0
+python-dateutil==2.9.0.post0

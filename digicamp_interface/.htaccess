@@ -1,0 +1,9 @@
+RewriteEngine On
+# Serve the directory index to the root URL
+RewriteRule ^/$ /index.html [L]
+
+# Rewrite all other requests to index.html so that
+# the Flutter app can handle the routing
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]

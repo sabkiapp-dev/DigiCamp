@@ -1,0 +1,7 @@
+# Project exclude paths
+/.dart_tool/
+/build/
+contacts_sample.csv
+test.py
+.env
+env
