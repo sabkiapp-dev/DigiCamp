@@ -3,7 +3,7 @@ import json
 import random
 from django.http import JsonResponse
 import requests
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.parsers import JSONParser
 from ..models.call_status import CallStatus
 from ..models.call_dtmf_status import CallDtmfStatus
@@ -44,7 +44,12 @@ def check_sim_block_call(user_host, port):
     }
 
     # Call new endpoint /api/call/make with JWT auth
-    url = f"https://{user_host.host}.sabkiapp.com/api/call/make"
+    # If host is an IP address, use local HTTP with stored port; otherwise use HTTPS with .sabkiapp.com
+    is_ip = user_host.host.replace('.', '').isdigit()
+    if is_ip:
+        url = f"http://{user_host.host}:{user_host.port}/api/call/make"
+    else:
+        url = f"https://{user_host.host}.sabkiapp.com/api/call/make"
 
     # Data payload - note: system_password is kept for backward compatibility
     # but JWT authentication is now used
@@ -66,61 +71,51 @@ def check_sim_block_call(user_host, port):
 
 
 @api_view(['POST'])
+@authentication_classes([])  # Disable DRF authentication - we use custom JWT
+@permission_classes([])  # Allow any request
 def send_call_status(request):
     """
     Receive call status callbacks from gateway hosts.
-    Now supports JWT authentication in addition to legacy password auth.
+    JWT authentication REQUIRED - no password fallback.
     """
     data = JSONParser().parse(request)
     host = data.get('host')
     campaign_id = data.get('campaign')
 
-    # Get JWT token from Authorization header
+    # Get JWT token from Authorization header - REQUIRED
     auth_header = request.headers.get('Authorization', '')
-    jwt_token = None
-    if auth_header.startswith('Bearer '):
-        jwt_token = auth_header[7:]
+    if not auth_header.startswith('Bearer '):
+        return JsonResponse({"message": "Authorization header with JWT token required"}, status=401)
 
-    # create a random 10 digit number for testing
-    random_id = ''.join([str(random.randint(0, 9)) for _ in range(10)])
+    jwt_token = auth_header[7:]
 
-    # Try JWT authentication first, then fall back to password-based auth
+    # Validate JWT token
     user_host = None
     user_id = None
 
-    if jwt_token:
-        # Try JWT authentication
-        try:
-            # Extract host from token to verify it matches
-            token_host = JWTTokenService.extract_host_from_token(jwt_token)
-            if token_host and token_host == host:
-                # Verify the token
-                payload = JWTTokenService.verify_host_token(jwt_token, host)
-                # Get user_host using the host
-                user_host = UserHosts.objects.get(host=host)
-                user_id = payload.get('user_id')
-                print(f"JWT Authentication successful for host: {host}")
-            else:
-                print(f"JWT token host mismatch: token={token_host}, data={host}")
-        except Exception as e:
-            print(f"JWT authentication failed: {e}")
-            # Fall through to password-based auth
-            jwt_token = None
+    try:
+        # Extract host from token to verify it matches
+        token_host = JWTTokenService.extract_host_from_token(jwt_token)
+        if not token_host:
+            return JsonResponse({"message": "Invalid token: no issuer"}, status=401)
 
-    # If JWT failed or not provided, try password-based authentication (legacy)
-    if not user_host:
-        system_password = data.get('system_password')
-        print(f"Extracted host: {host}, system_password: {system_password}, campaign_id: {campaign_id}")
+        if token_host != host:
+            return JsonResponse({"message": f"JWT token host mismatch: token={token_host}, data={host}"}, status=401)
 
-        try:
-            campaign = Campaign.objects.get(id=campaign_id)
-            user_id = campaign.user_id
-            print(f"random id : {random_id}, phone : {data.get('phone')}, host: {host}, system_password: {system_password}, event : {data.get('event')} campaign_id: {campaign_id}, user_id : ", user_id)
-            user_host = UserHosts.objects.get(host=host, system_password=system_password, user_id=user_id)
-        except (Campaign.DoesNotExist, UserHosts.DoesNotExist):
-            print(f"Host not matching with user_id or password not correct random id : {random_id}")
-            return JsonResponse({"message": 'Host not matching with user_id or password not correct'}, status=400)
+        # Verify the token using host's Ed25519 public key
+        payload = JWTTokenService.verify_host_token(jwt_token, host)
+        # Get user_host using the host
+        user_host = UserHosts.objects.get(host=host)
+        user_id = payload.get('user_id')
+        print(f"JWT Authentication successful for host: {host}")
+    except UserHosts.DoesNotExist:
+        return JsonResponse({"message": f"Host {host} not found in database"}, status=401)
+    except Exception as e:
+        print(f"JWT authentication failed: {e}")
+        return JsonResponse({"message": f"JWT authentication failed: {str(e)}"}, status=401)
 
+    # create a random 10 digit number for testing
+    random_id = ''.join([str(random.randint(0, 9)) for _ in range(10)])
 
     current_time = get_mytime()
     phone = data.get('phone')
@@ -130,7 +125,13 @@ def send_call_status(request):
     host = user_host.id
     campaign_id = data.get('campaign')  # Assuming campaign_id is in data
 
-    
+    # Fetch Campaign object
+    try:
+        campaign = Campaign.objects.get(id=campaign_id)
+    except Campaign.DoesNotExist:
+        return JsonResponse({"message": f"Campaign {campaign_id} not found"}, status=404)
+
+
     if(data.get('event') == 'start_dialing'):
         dtmf_response = data.get('dtmf_response')
         if not dtmf_response or not dtmf_response.isdigit():
@@ -407,9 +408,10 @@ def reboot_active_host():
     Reboot all active hosts.
     Uses JWT authentication for API calls.
     """
-    active_hosts = UserHosts.objects.filter().values('host').distinct()
+    active_hosts = UserHosts.objects.filter().values('host', 'port').distinct()
     for host_dict in active_hosts:
         host = host_dict['host']
+        port = host_dict.get('port', 9000)
 
         # Generate JWT token for host authentication
         try:
@@ -424,8 +426,17 @@ def reboot_active_host():
             'Content-Type': 'application/json',
         }
 
+        # If host is an IP address, use local HTTP with stored port; otherwise use HTTPS with .sabkiapp.com
+        is_ip = host.replace('.', '').isdigit()
+        if is_ip:
+            tunnel_url = f'http://{host}:{port}/api/status/tunnel'
+            reboot_url = f'http://{host}:{port}/api/admin/reboot'
+        else:
+            tunnel_url = f'https://{host}.sabkiapp.com/api/status/tunnel'
+            reboot_url = f'https://{host}.sabkiapp.com/api/admin/reboot'
+
         # call the api {host}.sabkiapp.com/api/status/tunnel (no auth needed)
-        response = requests.get(f'https://{host}.sabkiapp.com/api/status/tunnel')
+        response = requests.get(tunnel_url)
 
         # if the response is not 200, leave else call the reboot api
         if response.status_code != 200:
@@ -433,7 +444,7 @@ def reboot_active_host():
 
         # call the reboot api with JWT auth
         reboot_response = requests.post(
-            f'https://{host}.sabkiapp.com/api/admin/reboot',
+            reboot_url,
             headers=headers,
             json={'host': host}
         )
